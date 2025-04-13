@@ -5,7 +5,8 @@ import os
 import uuid
 import threading
 import time
-import camelot
+import pdfplumber
+import openpyxl
 
 app = Flask(__name__)
 CORS(app)
@@ -23,7 +24,7 @@ def delete_file_later(path, delay=300):
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (Camelot-stream) API is running ✅'}), 200
+    return jsonify({'status': 'PDF to Excel (pdfplumber enhanced) API is running ✅'}), 200
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -38,13 +39,35 @@ def convert_pdf_to_excel():
     file.save(input_pdf)
 
     try:
-        # ✅ Using stream mode instead of lattice (no Ghostscript needed)
-        tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
-        if tables.n == 0:
-            delete_file_later(input_pdf)
-            return 'No tables found in the PDF.', 400
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        row_index = 1
+        text_found = False
 
-        tables.export(output_excel, f='excel')
+        with pdfplumber.open(input_pdf) as pdf:
+            for page in pdf.pages:
+                # Try to extract tables first
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        for row in table:
+                            ws.append([cell if cell is not None else '' for cell in row])
+                            row_index += 1
+                    text_found = True
+                else:
+                    # If no tables, extract plain text line-by-line
+                    text = page.extract_text()
+                    if text:
+                        for line in text.splitlines():
+                            ws.append([line])
+                            row_index += 1
+                        text_found = True
+
+        if not text_found:
+            delete_file_later(input_pdf)
+            return 'No extractable tables or text found. Cannot convert scanned/image-only PDFs.', 400
+
+        wb.save(output_excel)
 
     except Exception as e:
         print("❌ Error:", e)
