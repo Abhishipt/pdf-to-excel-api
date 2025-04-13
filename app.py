@@ -5,8 +5,7 @@ import os
 import uuid
 import threading
 import time
-import pdfplumber
-import openpyxl
+import camelot
 
 app = Flask(__name__)
 CORS(app)
@@ -39,31 +38,14 @@ def convert_pdf_to_excel():
     file.save(input_pdf)
 
     try:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        row_index = 1
+        # Use Camelot to extract tables
+        tables = camelot.read_pdf(input_pdf, pages='all', flavor='lattice')  # Use 'stream' if tables not detected
 
-        with pdfplumber.open(input_pdf) as pdf:
-            text_found = False
-            for page in pdf.pages:
-                table = page.extract_table()
-                if table:
-                    for row in table:
-                        ws.append(row)
-                        row_index += 1
-                    text_found = True
-                elif page.extract_text():
-                    lines = page.extract_text().splitlines()
-                    for line in lines:
-                        ws.append([line])
-                        row_index += 1
-                    text_found = True
-
-        if not text_found:
+        if tables.n == 0:
             delete_file_later(input_pdf)
-            return 'No extractable text or tables found. Cannot convert scanned/image-only PDFs.', 400
+            return 'No tables found in PDF.', 400
 
-        wb.save(output_excel)
+        tables.export(output_excel, f='excel')  # Save as Excel
 
     except Exception as e:
         print("❌ Error:", e)
@@ -76,4 +58,3 @@ def convert_pdf_to_excel():
 
 if __name__ == '__main__':
     app.run(debug=False)
-    
