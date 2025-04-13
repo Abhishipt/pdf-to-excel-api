@@ -1,5 +1,5 @@
 Flask
 flask-cors
 camelot-py[cv]
-openpyxl
+PyPDF2
 gunicorn
