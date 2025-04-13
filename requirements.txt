@@ -2,3 +2,4 @@ Flask
 flask-cors
 pdfplumber
 openpyxl
+gunicorn
