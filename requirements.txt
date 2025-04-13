@@ -1,5 +1,5 @@
 Flask
 flask-cors
-camelot-py[cv]
+camelot-py
 PyPDF2
 gunicorn
