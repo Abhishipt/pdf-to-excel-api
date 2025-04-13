@@ -7,6 +7,9 @@ import threading
 import time
 import pdfplumber
 import openpyxl
+from pdf2image import convert_from_path
+import pytesseract
+from PIL import Image
 
 app = Flask(__name__)
 CORS(app)
@@ -24,7 +27,7 @@ def delete_file_later(path, delay=300):
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (pdfplumber enhanced) API is running ✅'}), 200
+    return jsonify({'status': 'PDF to Excel (Hybrid OCR + Tables) API is running ✅'}), 200
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -46,7 +49,6 @@ def convert_pdf_to_excel():
 
         with pdfplumber.open(input_pdf) as pdf:
             for page in pdf.pages:
-                # Try to extract tables first
                 tables = page.extract_tables()
                 if tables:
                     for table in tables:
@@ -55,17 +57,26 @@ def convert_pdf_to_excel():
                             row_index += 1
                     text_found = True
                 else:
-                    # If no tables, extract plain text line-by-line
                     text = page.extract_text()
-                    if text:
+                    if text and any(c.isalpha() for c in text):
                         for line in text.splitlines():
                             ws.append([line])
                             row_index += 1
                         text_found = True
 
         if not text_found:
+            # Use OCR fallback
+            images = convert_from_path(input_pdf)
+            for img in images:
+                text = pytesseract.image_to_string(img, lang='eng+hin')
+                for line in text.splitlines():
+                    ws.append([line])
+                    row_index += 1
+            text_found = True
+
+        if not text_found:
             delete_file_later(input_pdf)
-            return 'No extractable tables or text found. Cannot convert scanned/image-only PDFs.', 400
+            return 'No extractable content found. Cannot convert scanned/image-only PDFs.', 400
 
         wb.save(output_excel)
 
@@ -76,7 +87,8 @@ def convert_pdf_to_excel():
     delete_file_later(input_pdf)
     delete_file_later(output_excel)
 
-    return send_file(output_excel, as_attachment=True, download_name='converted.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    return send_file(output_excel, as_attachment=True, download_name='converted.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
     app.run(debug=False)
