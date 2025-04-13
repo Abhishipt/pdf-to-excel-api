@@ -2,4 +2,7 @@ Flask
 flask-cors
 pdfplumber
 openpyxl
+pytesseract
+pdf2image
+Pillow
 gunicorn
