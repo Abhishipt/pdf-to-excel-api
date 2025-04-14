@@ -1,8 +1,7 @@
 Flask
 flask-cors
+camelot-py
 pdfplumber
+PyPDF2
 openpyxl
-pytesseract
-pdf2image
-Pillow
 gunicorn
