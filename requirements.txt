@@ -1,6 +1,7 @@
 Flask
 flask-cors
+camelot-py
 pdfplumber
-PyMuPDF
+PyPDF2
 openpyxl
 gunicorn
