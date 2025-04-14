@@ -16,7 +16,7 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Auto-delete files after 1 minute
+# Auto-delete after 1 minute
 def delete_file_later(path, delay=60):
     def remove():
         time.sleep(delay)
@@ -24,9 +24,10 @@ def delete_file_later(path, delay=60):
             os.remove(path)
     threading.Thread(target=remove).start()
 
+# ✅ Keep-alive check
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (All Fixes + 1 Min Delete) API ✅'}), 200
+    return jsonify({'status': 'PDF to Excel (All Fixes + 1 Min Auto-Delete) API is running ✅'}), 200
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -45,6 +46,7 @@ def convert_pdf_to_excel():
         ws = wb.active
         row_index = 1
         content_found = False
+        max_cols = 0
 
         border = Border(left=Side(style='thin'), right=Side(style='thin'),
                         top=Side(style='thin'), bottom=Side(style='thin'))
@@ -56,22 +58,26 @@ def convert_pdf_to_excel():
                 if is_header:
                     cell.font = bold_font
 
-        def write_table_to_ws(table_data, is_header_inserted=False):
-            nonlocal row_index
+        def normalize_row(row, width):
+            return row + [''] * (width - len(row))
+
+        def write_table_to_ws(table_data, insert_header=True):
+            nonlocal row_index, max_cols
             for i, row in enumerate(table_data):
                 clean_row = [cell if cell is not None else '' for cell in row]
+                max_cols = max(max_cols, len(clean_row))
                 ws.append(clean_row)
-                style_row(ws[row_index], is_header=(i == 0 and not is_header_inserted))
+                style_row(ws[row_index], is_header=(i == 0 and insert_header))
                 row_index += 1
 
-        # Try Camelot (stream) first
+        # Try Camelot (stream)
         camelot_tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
         if camelot_tables.n > 0:
             for table in camelot_tables:
                 write_table_to_ws(table.df.values.tolist())
             content_found = True
 
-        # Fallback to pdfplumber if Camelot fails
+        # Fallback to pdfplumber
         if not content_found:
             with pdfplumber.open(input_pdf) as pdf:
                 for page in pdf.pages:
@@ -83,8 +89,9 @@ def convert_pdf_to_excel():
                     else:
                         lines = page.extract_text().splitlines() if page.extract_text() else []
                         if lines:
-                            header_row = [cell.strip() for cell in lines[0].split()]
-                            ws.append(header_row)
+                            header = [cell.strip() for cell in lines[0].split()]
+                            max_cols = max(max_cols, len(header))
+                            ws.append(header)
                             style_row(ws[row_index], is_header=True)
                             row_index += 1
                             for line in lines[1:]:
@@ -93,9 +100,12 @@ def convert_pdf_to_excel():
                                 row_index += 1
                             content_found = True
 
-        if not content_found:
-            delete_file_later(input_pdf)
-            return 'No extractable content found in PDF.', 400
+        # Pad all rows to same column count
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+            row_values = [cell.value if cell.value is not None else '' for cell in row]
+            if len(row_values) < max_cols:
+                for _ in range(max_cols - len(row_values)):
+                    ws.cell(row=row[0].row, column=len(row) + 1, value='')
 
         wb.save(output_excel)
 
