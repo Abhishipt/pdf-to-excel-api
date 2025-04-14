@@ -16,8 +16,8 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Auto-delete files after 5 minutes
-def delete_file_later(path, delay=300):
+# Auto-delete files after 1 minutes
+def delete_file_later(path, delay=60):
     def remove():
         time.sleep(delay)
         if os.path.exists(path):
