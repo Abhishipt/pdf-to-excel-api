@@ -8,11 +8,11 @@ import time
 import openpyxl
 from openpyxl.styles import Border, Side, Font, PatternFill
 
-# Unicode-friendly text extraction
-# pdfminer.six
+# Unicode-aware text extraction
 from pdfminer.high_level import extract_text
-# PyMuPDF (fallback for positional words)
-import fitz
+import fitz  # PyMuPDF
+import pytesseract
+from PIL import Image
 
 app = Flask(__name__)
 CORS(app)
@@ -22,7 +22,8 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 ACTIVE_FILES = set()
 
-def delete_file_later(path, delay=300):
+# Auto-delete files after delay
+def delete_file_later(path, delay=60):
     def remove():
         time.sleep(delay)
         if os.path.exists(path) and os.path.basename(path) not in ACTIVE_FILES:
@@ -33,6 +34,7 @@ def delete_file_later(path, delay=300):
                 print(f"[ERROR] Cleanup failed: {e}")
     threading.Thread(target=remove, daemon=True).start()
 
+# Periodic cleanup every 3 minutes
 def periodic_cleanup(interval=180):
     def cleanup():
         while True:
@@ -54,35 +56,31 @@ def periodic_cleanup(interval=180):
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (Unicode-safe) API is running ✅'}), 200
+    return jsonify({'status': 'PDF to Excel (OCR fallback) API is running ✅'}), 200
 
 @app.route('/ping')
 def ping():
     return jsonify({'ping': 'pong'}), 200
 
+# --- Extraction helpers ---
+
 def unicode_text_pdfminer(pdf_path):
     try:
-        # pdfminer.six maps CID fonts to Unicode better than many libraries
-        text = extract_text(pdf_path)  # returns full doc text
-        return text or ""
+        return extract_text(pdf_path) or ""
     except Exception as e:
         print(f"[WARN] pdfminer failed: {e}")
         return ""
 
 def unicode_lines_pymupdf(pdf_path):
-    # Fallback: reconstruct lines from word positions
     try:
         doc = fitz.open(pdf_path)
         lines = []
         for page in doc:
-            # Extract words: (x0, y0, x1, y1, "text", block_no, line_no, word_no)
             words = page.get_text("words")
-            # Group by line_no
             from collections import defaultdict
             line_map = defaultdict(list)
             for (x0, y0, x1, y1, text, block, lno, wno) in words:
                 line_map[(block, lno)].append((x0, text))
-            # Sort by x0 and join
             for _, items in sorted(line_map.items(), key=lambda kv: (kv[0][0], kv[0][1])):
                 items.sort(key=lambda t: t[0])
                 line = " ".join(t[1] for t in items).strip()
@@ -93,18 +91,32 @@ def unicode_lines_pymupdf(pdf_path):
         print(f"[WARN] PyMuPDF fallback failed: {e}")
         return ""
 
+def ocr_text_fallback(pdf_path):
+    try:
+        doc = fitz.open(pdf_path)
+        all_text = []
+        for page in doc:
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text = pytesseract.image_to_string(img, lang="hin+eng")
+            if text.strip():
+                all_text.append(text)
+        return "\n".join(all_text)
+    except Exception as e:
+        print(f"[WARN] OCR failed: {e}")
+        return ""
+
 def parse_line_to_cells(line):
-    # Prefer colon split
     if ":" in line:
         left, right = line.split(":", 1)
         return [left.strip(), right.strip()]
-    # If spaced columns (≥3 spaces), split
     if "   " in line:
         parts = [p.strip() for p in line.split("   ") if p.strip()]
         if len(parts) > 1:
             return parts
-    # Otherwise single cell
     return [line.strip()]
+
+# --- Main conversion route ---
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -141,12 +153,14 @@ def convert_pdf_to_excel():
                     cell.font = bold_font
                     cell.fill = header_fill
 
-        # 1) Try pdfminer for clean Unicode
+        # Try pdfminer
         text = unicode_text_pdfminer(input_pdf)
-
-        # 2) Fallback to PyMuPDF word-reconstructed lines if empty
+        # Fallback to PyMuPDF
         if not text.strip():
             text = unicode_lines_pymupdf(input_pdf)
+        # Fallback to OCR
+        if not text.strip():
+            text = ocr_text_fallback(input_pdf)
 
         if not text.strip():
             ACTIVE_FILES.discard(os.path.basename(input_pdf))
@@ -154,28 +168,22 @@ def convert_pdf_to_excel():
             delete_file_later(input_pdf)
             return 'No extractable content found in PDF.', 400
 
-        # Heuristic: tag lines that look like section headers for styling
         header_keywords = [
             "Mutation Details", "Correction slip Generation",
             "Applicant Details", "Vendee Details", "Vendor Details",
             "Plot Details", "Document uploaded", "View of Mutation"
         ]
-        devanagari_header_signals = ["विवरण", "दस्तावेज", "विक्रेता", "क्रेता", "विवरण", "हalka", "मौजा", "खाता", "क्षेत्रफल"]
 
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-
             cells = parse_line_to_cells(line)
             ws.append(cells)
-            # Style header-like lines (English keywords or certain Devanagari signals)
-            is_header = any(k.lower() in line.lower() for k in header_keywords) or \
-                        any(k in line for k in devanagari_header_signals)
+            is_header = any(k.lower() in line.lower() for k in header_keywords)
             style_row(current_row, is_header=is_header)
             current_row += 1
 
-        # Auto-fit columns
         for col in ws.columns:
             max_len = 0
             letter = col[0].column_letter
