@@ -5,3 +5,4 @@ pdfplumber
 PyPDF2
 openpyxl
 gunicorn
+pandas
