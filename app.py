@@ -5,12 +5,9 @@ import os
 import uuid
 import threading
 import time
-import camelot
-import pdfplumber
+import fitz  # PyMuPDF
 import openpyxl
-from openpyxl.styles import Border, Side, Font
-from openpyxl.utils.dataframe import dataframe_to_rows
-import pandas as pd
+from openpyxl.styles import Border, Side, Font, PatternFill
 
 app = Flask(__name__)
 CORS(app)
@@ -18,11 +15,10 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Track active files to avoid cleaning them mid-process
 ACTIVE_FILES = set()
 
 # Auto-delete files after delay
-def delete_file_later(path, delay=300):
+def delete_file_later(path, delay=60):
     def remove():
         time.sleep(delay)
         if os.path.exists(path) and os.path.basename(path) not in ACTIVE_FILES:
@@ -55,9 +51,8 @@ def periodic_cleanup(interval=180):
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (improved) API is running ✅'}), 200
+    return jsonify({'status': 'PDF to Excel (PyMuPDF) API is running ✅'}), 200
 
-# Ping route to keep API alive
 @app.route('/ping')
 def ping():
     return jsonify({'ping': 'pong'}), 200
@@ -82,62 +77,45 @@ def convert_pdf_to_excel():
         wb = openpyxl.Workbook()
         ws = wb.active
         row_index = 1
-        content_found = False
 
         border = Border(
             left=Side(style='thin'), right=Side(style='thin'),
             top=Side(style='thin'), bottom=Side(style='thin')
         )
         bold_font = Font(bold=True)
+        header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
         def style_row(cells, is_header=False):
             for cell in cells:
                 cell.border = border
                 if is_header:
                     cell.font = bold_font
+                    cell.fill = header_fill
 
-        # Try Camelot first
-        try:
-            camelot_tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
-            if camelot_tables.n > 0:
-                for table in camelot_tables:
-                    df = pd.DataFrame(table.df.values.tolist())
-                    for r in dataframe_to_rows(df, index=False, header=True):
-                        ws.append(r)
-                        style_row(ws[row_index], is_header=(row_index == 1))
-                        row_index += 1
-                content_found = True
-        except Exception as e:
-            print(f"[WARN] Camelot failed: {e}")
+        # Extract text with PyMuPDF
+        doc = fitz.open(input_pdf)
+        for page in doc:
+            text = page.get_text("text")
+            if not text:
+                continue
 
-        # Fallback to pdfplumber
-        if not content_found:
-            with pdfplumber.open(input_pdf) as pdf:
-                for page in pdf.pages:
-                    tables = page.extract_tables()
-                    if tables:
-                        for table in tables:
-                            df = pd.DataFrame(table)
-                            for r in dataframe_to_rows(df, index=False, header=True):
-                                clean_row = [str(cell).encode('utf-8').decode('utf-8') if cell else '' for cell in r]
-                                ws.append(clean_row)
-                                style_row(ws[row_index], is_header=(row_index == 1))
-                                row_index += 1
-                        content_found = True
-                    else:
-                        text = page.extract_text()
-                        if text:
-                            for line in text.splitlines():
-                                ws.append([line])
-                                style_row(ws[row_index])
-                                row_index += 1
-                            content_found = True
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
 
-        if not content_found:
-            ACTIVE_FILES.discard(os.path.basename(input_pdf))
-            ACTIVE_FILES.discard(os.path.basename(output_excel))
-            delete_file_later(input_pdf)
-            return 'No extractable content found in PDF.', 400
+                # Split on colon or large spacing
+                if ":" in line:
+                    parts = [p.strip() for p in line.split(":", 1)]
+                    ws.append(parts)
+                elif "   " in line:  # multiple spaces
+                    parts = [p.strip() for p in line.split("   ") if p.strip()]
+                    ws.append(parts)
+                else:
+                    ws.append([line])
+
+                style_row(ws[row_index])
+                row_index += 1
 
         # Auto-adjust column widths
         for col in ws.columns:
