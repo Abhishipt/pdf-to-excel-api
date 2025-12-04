@@ -16,39 +16,34 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Auto-delete files after 60 seconds
-def delete_file_later(path, delay=60):
+# Delete specific file after delay
+def delete_file_later(path, delay=600):
     def remove():
         time.sleep(delay)
         if os.path.exists(path):
-            try:
-                os.remove(path)
-                print(f"[CLEANUP] Deleted {path}")
-            except Exception as e:
-                print(f"[ERROR] Cleanup failed for {path}: {e}")
+            os.remove(path)
     threading.Thread(target=remove, daemon=True).start()
 
-# Periodic cleanup every 3 minutes
-def periodic_cleanup(interval=180):
-    def cleanup():
+# Periodic cleanup of leftover files
+def start_periodic_cleanup(folder=UPLOAD_FOLDER, max_age=600):
+    def cleaner():
         while True:
-            time.sleep(interval)
-            try:
-                for fname in os.listdir(UPLOAD_FOLDER):
-                    fpath = os.path.join(UPLOAD_FOLDER, fname)
-                    if os.path.isfile(fpath):
-                        try:
-                            os.remove(fpath)
-                            print(f"[PERIODIC] Removed leftover: {fpath}")
-                        except Exception as e:
-                            print(f"[PERIODIC ERROR] Could not remove {fpath}: {e}")
-            except Exception as e:
-                print(f"[PERIODIC ERROR] Cleanup loop failed: {e}")
-    threading.Thread(target=cleanup, daemon=True).start()
+            now = time.time()
+            for filename in os.listdir(folder):
+                path = os.path.join(folder, filename)
+                if os.path.isfile(path) and now - os.path.getmtime(path) > max_age:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+            time.sleep(300)
+    threading.Thread(target=cleaner, daemon=True).start()
+
+start_periodic_cleanup()
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (with borders) API is running ✅'}), 200
+    return jsonify({'status': '✅ PDF to Excel (with borders) API is running'}), 200
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -80,21 +75,20 @@ def convert_pdf_to_excel():
                 if is_header:
                     cell.font = bold_font
 
-        # Try Camelot (stream mode first)
+        # Primary: Try Camelot (stream)
         try:
             camelot_tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
             if camelot_tables.n > 0:
                 for table in camelot_tables:
                     for i, row in enumerate(table.df.values.tolist()):
-                        ws.append(row)
+                        ws.append([cell.strip() for cell in row])
                         style_row(ws[row_index], is_header=(i == 0))
                         row_index += 1
                 content_found = True
-                print(f"[CAMELOT] Extracted {camelot_tables.n} tables using stream mode")
         except Exception as ce:
-            print(f"[CAMELOT ERROR] {ce}")
+            print("⚠️ Camelot failed:", ce)
 
-        # Fallback to pdfplumber
+        # Fallback: Try pdfplumber
         if not content_found:
             with pdfplumber.open(input_pdf) as pdf:
                 for page in pdf.pages:
@@ -102,38 +96,39 @@ def convert_pdf_to_excel():
                     if tables:
                         for table in tables:
                             for i, row in enumerate(table):
-                                clean_row = [cell if cell is not None else '' for cell in row]
+                                clean_row = [str(cell).strip() if cell else '' for cell in row]
                                 ws.append(clean_row)
                                 style_row(ws[row_index], is_header=(i == 0))
                                 row_index += 1
-                        content_found = True
+                            content_found = True
                     else:
                         text = page.extract_text()
                         if text:
                             for line in text.splitlines():
-                                ws.append([line])
+                                ws.append([line.strip()])
                                 style_row(ws[row_index])
                                 row_index += 1
                             content_found = True
-            print("[PDFPLUMBER] Fallback parsing complete")
 
         if not content_found:
             delete_file_later(input_pdf)
             return 'No extractable content found in PDF.', 400
 
         wb.save(output_excel)
-        print(f"[SAVE] Excel saved at {output_excel}")
 
     except Exception as e:
-        print("❌ Error:", e)
-        return 'Conversion failed.', 500
+        print("❌ Error during conversion:", e)
+        return 'Conversion failed due to an internal error.', 500
 
     delete_file_later(input_pdf)
     delete_file_later(output_excel)
 
-    return send_file(output_excel, as_attachment=True, download_name='converted_Tools_Subidha.xlsx',
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    return send_file(
+        output_excel,
+        as_attachment=True,
+        download_name='converted_Tools_Subidha.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 if __name__ == '__main__':
-    periodic_cleanup(interval=180)
     app.run(debug=False)
