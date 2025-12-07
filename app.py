@@ -8,10 +8,7 @@ import time
 import camelot
 import pdfplumber
 import openpyxl
-from openpyxl.styles import Border, Side, Font
-from pdf2image import convert_from_path
-import pytesseract
-from PIL import Image
+from openpyxl.styles import Border, Side, Font, Alignment
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -20,33 +17,25 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Clean up old files > 3 minutes
-def cleanup_old_files(folder, age_limit=180):
+# Cleanup old files older than 3 minutes
+def periodic_cleanup():
     now = time.time()
-    for filename in os.listdir(folder):
-        file_path = os.path.join(folder, filename)
-        if os.path.isfile(file_path):
-            if now - os.path.getmtime(file_path) > age_limit:
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    print(f"Failed to delete {file_path}: {e}")
+    cutoff = now - 180  # 3 minutes
+    for fname in os.listdir(UPLOAD_FOLDER):
+        path = os.path.join(UPLOAD_FOLDER, fname)
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
-# Schedule cleanup every time a conversion happens
+# Start background cleanup every time a conversion is triggered
 def schedule_cleanup():
-    threading.Thread(target=cleanup_old_files, args=(UPLOAD_FOLDER,)).start()
-
-# Per-file cleanup after 1 minute
-def delete_file_later(path, delay=60):
-    def remove():
-        time.sleep(delay)
-        if os.path.exists(path):
-            os.remove(path)
-    threading.Thread(target=remove).start()
+    threading.Thread(target=periodic_cleanup).start()
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF to Excel (Hindi OCR Enhanced) API is running ✅'}), 200
+    return jsonify({'status': '✅ PDF to Excel Converter is running'}), 200
 
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_excel():
@@ -54,19 +43,19 @@ def convert_pdf_to_excel():
     if not file:
         return 'No file uploaded', 400
 
-    original_name = secure_filename(file.filename.rsplit('.', 1)[0])
-    extension = file.filename.rsplit('.', 1)[-1]
+    filename = secure_filename(file.filename)
+    file_base = os.path.splitext(filename)[0]
     file_id = str(uuid.uuid4())
+    input_pdf = os.path.join(UPLOAD_FOLDER, f"{file_id}_{filename}")
+    output_excel = os.path.join(UPLOAD_FOLDER, f"{file_base}_Tools_Subidha.xlsx")
 
-    input_pdf = os.path.join(UPLOAD_FOLDER, f"{file_id}_{original_name}.{extension}")
-    output_excel = os.path.join(UPLOAD_FOLDER, f"{original_name}_Tools_Subidha.xlsx")
     file.save(input_pdf)
-
-    schedule_cleanup()
 
     try:
         wb = openpyxl.Workbook()
         ws = wb.active
+        ws.title = "Converted"
+
         row_index = 1
         content_found = False
 
@@ -75,27 +64,31 @@ def convert_pdf_to_excel():
             top=Side(style='thin'), bottom=Side(style='thin')
         )
         bold_font = Font(bold=True)
+        alignment = Alignment(wrap_text=True, vertical="top")
 
-        def style_row(cells, is_header=False):
+        def style_cells(cells, is_header=False):
             for cell in cells:
                 cell.border = border
+                cell.alignment = alignment
                 if is_header:
                     cell.font = bold_font
 
-        # Primary: Camelot
+        # Try with Camelot
         try:
-            camelot_tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
-            if camelot_tables.n > 0:
-                for table in camelot_tables:
-                    for i, row in enumerate(table.df.values.tolist()):
-                        ws.append(row)
-                        style_row(ws[row_index], is_header=(i == 0))
+            tables = camelot.read_pdf(input_pdf, pages='all', flavor='stream')
+            if tables.n > 0:
+                for table in tables:
+                    data = table.df.values.tolist()
+                    for i, row in enumerate(data):
+                        clean_row = [cell.strip() for cell in row]
+                        ws.append(clean_row)
+                        style_cells(ws[row_index], is_header=(i == 0))
                         row_index += 1
                 content_found = True
-        except Exception as e:
-            print("Camelot error:", e)
+        except Exception:
+            pass  # Fallback to pdfplumber if Camelot fails
 
-        # Fallback: pdfplumber
+        # Fallback: Try with pdfplumber
         if not content_found:
             with pdfplumber.open(input_pdf) as pdf:
                 for page in pdf.pages:
@@ -103,45 +96,43 @@ def convert_pdf_to_excel():
                     if tables:
                         for table in tables:
                             for i, row in enumerate(table):
-                                clean_row = [cell if cell else '' for cell in row]
+                                clean_row = [cell.strip() if cell else '' for cell in row]
                                 ws.append(clean_row)
-                                style_row(ws[row_index], is_header=(i == 0))
+                                style_cells(ws[row_index], is_header=(i == 0))
                                 row_index += 1
                         content_found = True
                     else:
+                        # Extract lines of text
                         text = page.extract_text()
                         if text:
                             for line in text.splitlines():
                                 ws.append([line])
-                                style_row(ws[row_index])
+                                style_cells(ws[row_index])
                                 row_index += 1
                             content_found = True
 
-        # Final fallback: OCR Hindi
         if not content_found:
-            images = convert_from_path(input_pdf)
-            for img in images:
-                text = pytesseract.image_to_string(img, lang='hin')
-                if text.strip():
-                    for line in text.strip().split('\n'):
-                        if line.strip():
-                            ws.append([line])
-                            style_row(ws[row_index])
-                            row_index += 1
-                    content_found = True
+            os.remove(input_pdf)
+            return 'No extractable content found in PDF.', 400
 
-        if not content_found:
-            delete_file_later(input_pdf)
-            return 'No readable content found.', 400
+        # Auto-adjust column width
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            adjusted_width = min((max_length + 2), 60)
+            ws.column_dimensions[col_letter].width = adjusted_width
 
         wb.save(output_excel)
 
     except Exception as e:
         print("❌ Conversion error:", e)
-        return 'Conversion failed.', 500
+        return 'Conversion failed due to an internal error.', 500
 
-    delete_file_later(input_pdf)
-    delete_file_later(output_excel)
+    # Schedule deletion
+    schedule_cleanup()
 
     return send_file(
         output_excel,
