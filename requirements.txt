@@ -1,8 +1,8 @@
-Flask==2.3.2
-Flask-Cors==3.0.10
-camelot-py==0.11.0
-pdfplumber==0.10.2
-PyPDF2==3.0.1
-openpyxl==3.1.2
-gunicorn==21.2.0
-ghostscript==0.7
+Flask
+flask-cors
+camelot-py
+pdfplumber
+PyPDF2
+openpyxl
+gunicorn
+opencv-python
