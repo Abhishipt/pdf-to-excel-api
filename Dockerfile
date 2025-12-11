@@ -1,11 +1,9 @@
-# Use a lightweight Python base image
 FROM python:3.11-slim
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install system dependencies
+# Install system libraries required for camelot and Hindi fonts
 RUN apt-get update && apt-get install -y \
     gcc \
     ghostscript \
@@ -13,26 +11,25 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libgl1 \
+    tesseract-ocr \
     poppler-utils \
+    tcl \
+    tk \
     fonts-noto-core \
     fonts-noto-cjk \
-    fonts-noto-color-emoji \
     fonts-noto-unhinted \
+    fonts-noto-color-emoji \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy local code to the container
 COPY . /app
 
-# Install Python dependencies
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
-# Expose the port
 EXPOSE 10000
 
-# Run the app
 CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
